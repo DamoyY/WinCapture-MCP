@@ -6,6 +6,7 @@ mod error;
 mod frame;
 mod hwnd;
 mod process;
+mod sonic_json;
 mod tool_types;
 mod window_details;
 mod window_query;

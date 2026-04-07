@@ -1,5 +1,5 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use sonic_rs::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct FindWindowsRequest {
     pub(crate) process_name: String,

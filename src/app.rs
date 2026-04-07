@@ -2,12 +2,13 @@ use crate::{
     capture::capture_window_png,
     error::to_tool_error,
     hwnd::parse_hwnd,
+    sonic_json::SonicToolResult,
     tool_types::{CaptureWindowRequest, FindWindowsRequest, FindWindowsResponse},
     window_query::find_windows_by_process,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rmcp::{
-    Json, ServerHandler,
+    ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{Content, Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
@@ -27,15 +28,15 @@ impl ScreenServer {
     fn list_hwnds(
         &self,
         Parameters(FindWindowsRequest { process_name }): Parameters<FindWindowsRequest>,
-    ) -> Result<Json<FindWindowsResponse>, String> {
+    ) -> SonicToolResult<FindWindowsResponse, String> {
         let _: &ToolRouter<Self> = &self.tool_router;
-        match find_windows_by_process(&process_name) {
-            Ok(windows) => Ok(Json(FindWindowsResponse {
+        SonicToolResult(match find_windows_by_process(&process_name) {
+            Ok(windows) => Ok(FindWindowsResponse {
                 process_name,
                 windows,
-            })),
+            }),
             Err(error) => Err(to_tool_error(&error)),
-        }
+        })
     }
     #[tool(description = "输入 HWND，返回该窗口的 PNG 截图")]
     fn capture_hwnd(

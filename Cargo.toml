@@ -1,5 +1,5 @@
 [package]
-name = "mcp"
+name = "windows_capture"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,7 +10,7 @@ image = { version = "*", default-features = false, features = ["png"] }
 rmcp = { version = "*", default-features = false, features = ["macros", "server", "transport-io"] }
 schemars = "*"
 serde = { version = "*", features = ["derive"] }
-serde_json = "*"
+sonic-rs = "*"
 tokio = { version = "*", features = ["io-std", "macros", "rt-multi-thread"] }
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter"] }
