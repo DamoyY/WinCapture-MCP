@@ -5,8 +5,9 @@ edition = "2024"
 
 [dependencies]
 anyhow = "*"
-base64 = "*"
+base64-turbo = "*"
 garb = "*"
+mimalloc = "*"
 png = { version = "*", features = ["unstable"] }
 rmcp = { version = "*", default-features = false, features = ["macros", "server", "transport-io"] }
 schemars = "*"

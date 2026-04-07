@@ -6,7 +6,8 @@ use crate::{
     tool_types::{CaptureWindowRequest, FindWindowsRequest, FindWindowsResponse},
     window_query::find_windows_by_process,
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use anyhow::Error as AnyhowError;
+use base64_turbo::STANDARD;
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -17,6 +18,16 @@ use rmcp::{
 pub(crate) struct ScreenServer {
     tool_router: ToolRouter<Self>,
 }
+async fn run_blocking_tool<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|error| to_tool_error(&AnyhowError::new(error)))?
+        .map_err(|error| to_tool_error(&error))
+}
 #[tool_router]
 impl ScreenServer {
     pub(crate) fn new() -> Self {
@@ -25,34 +36,35 @@ impl ScreenServer {
         }
     }
     #[tool(description = "输入进程名，返回匹配窗口的 HWND 列表及窗口元信息")]
-    fn list_hwnds(
+    async fn list_hwnds(
         &self,
         Parameters(FindWindowsRequest { process_name }): Parameters<FindWindowsRequest>,
     ) -> SonicToolResult<FindWindowsResponse, String> {
         let _: &ToolRouter<Self> = &self.tool_router;
-        SonicToolResult(match find_windows_by_process(&process_name) {
-            Ok(windows) => Ok(FindWindowsResponse {
-                process_name,
-                windows,
-            }),
-            Err(error) => Err(to_tool_error(&error)),
-        })
+        SonicToolResult(
+            run_blocking_tool(move || {
+                let windows = find_windows_by_process(&process_name)?;
+                Ok(FindWindowsResponse {
+                    process_name,
+                    windows,
+                })
+            })
+            .await,
+        )
     }
     #[tool(description = "输入 HWND，返回该窗口的 PNG 截图")]
-    fn capture_hwnd(
+    async fn capture_hwnd(
         &self,
         Parameters(CaptureWindowRequest { hwnd }): Parameters<CaptureWindowRequest>,
     ) -> Result<Content, String> {
         let _: &ToolRouter<Self> = &self.tool_router;
-        let parsed_hwnd = match parse_hwnd(&hwnd) {
-            Ok(parsed_hwnd) => parsed_hwnd,
-            Err(error) => return Err(to_tool_error(&error)),
-        };
-        let png = match capture_window_png(parsed_hwnd) {
-            Ok(png) => png,
-            Err(error) => return Err(to_tool_error(&error)),
-        };
-        Ok(Content::image(STANDARD.encode(png), "image/png"))
+        let base64_png = run_blocking_tool(move || {
+            let parsed_hwnd = parse_hwnd(&hwnd)?;
+            let png = capture_window_png(parsed_hwnd)?;
+            Ok(STANDARD.encode(png))
+        })
+        .await?;
+        Ok(Content::image(base64_png, "image/png"))
     }
 }
 # [tool_handler (router = self . tool_router)]

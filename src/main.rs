@@ -12,7 +12,10 @@ mod window_details;
 mod window_query;
 use anyhow::Result;
 use app::ScreenServer;
+use mimalloc::MiMalloc;
 use rmcp::transport::stdio;
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
