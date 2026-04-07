@@ -1,5 +1,5 @@
 [package]
-name = "windows_capture"
+name = "WinCapture"
 version = "0.1.0"
 edition = "2024"
 
