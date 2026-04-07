@@ -8,6 +8,8 @@ Language Option / 语言选项：
 
 WinCapture-MCP is a Model Context Protocol (MCP) server written in Rust for Windows. It allows MCP clients to search for windows by process name and capture screenshots of specific windows by HWND.
 
+This tool can capture windows that are obscured, but it cannot capture minimized windows.
+
 ## System Requirements
 
 *   **Operating system**: Windows 10 or Windows 11 (the system must support the `Windows.Graphics.Capture` API).

@@ -8,6 +8,8 @@
 
 WinCapture-MCP 是一个基于 Rust 开发的 Model Context Protocol (MCP) 服务端工具，专为 Windows 系统设计。它允许 MCP 客户端按进程名查询窗口信息，并根据窗口句柄对指定窗口进行截图查看。
 
+该工具能够捕获被遮挡的窗口，无法捕获最小化的窗口。
+
 ## 系统要求
 
 *   **操作系统**：Windows 10 或 Windows 11（需要系统支持 `Windows.Graphics.Capture` API）。
