@@ -1,0 +1,89 @@
+[package]
+name = "mcp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "*"
+base64 = "*"
+image = { version = "*", default-features = false, features = ["png"] }
+rmcp = { version = "*", default-features = false, features = ["macros", "server", "transport-io"] }
+schemars = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+tokio = { version = "*", features = ["io-std", "macros", "rt-multi-thread"] }
+tracing = "*"
+tracing-subscriber = { version = "*", features = ["env-filter"] }
+windows = { version = "*", features = [
+    "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.dev]
+debug = true
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[lints.rust]
+future-incompatible = "warn"
+let-underscore = "warn"
+keyword-idents = "warn"
+nonstandard-style = "warn"
+refining-impl-trait = "warn"
+rust-2024-compatibility = "warn"
+
+missing_docs = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+restriction = { level = "warn", priority = -1 }
+
+absolute_paths = "allow"
+arbitrary_source_item_ordering = "allow"
+blanket_clippy_restriction_lints = "allow"
+cargo_common_metadata = "allow"
+else_if_without_else = "allow"
+exhaustive_structs = "allow"
+field_scoped_visibility_modifiers = "allow"
+float_arithmetic = "allow"
+implicit_return = "allow"
+missing_docs_in_private_items = "allow"
+missing_errors_doc = "allow"
+multiple_crate_versions = "allow"
+non_ascii_literal = "allow"
+panic = "allow"
+print_stderr = "allow"
+print_stdout = "allow"
+pub_with_shorthand = "allow"
+question_mark_used = "allow"
+redundant_pub_crate = "allow"
+separated_literal_suffix = "allow"
+self_named_module_files = "allow"
+semicolon_outside_block = "allow"
+similar_names = "allow"
+single_call_fn = "allow"
+too-many-arguments = "allow"
+too_many_lines = "allow"
+undocumented_unsafe_blocks = "allow"
+wildcard_dependencies = "allow"
