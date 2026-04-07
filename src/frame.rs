@@ -9,13 +9,14 @@ use core::{
 };
 use garb::bytes::bgra_to_rgba_strided;
 use png::{BitDepth, ColorType, Compression, Encoder};
-use std::{io::Cursor, sync::mpsc};
+use std::{io::Cursor, sync::Mutex};
+use tokio::{runtime::Runtime, sync::Notify, time::timeout};
 use windows::{
     Foundation::TypedEventHandler,
     Graphics::Capture::{Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem},
     Graphics::DirectX::DirectXPixelFormat,
     Win32::{
-        Foundation::E_POINTER,
+        Foundation::{E_FAIL, E_POINTER},
         Graphics::Direct3D11::{
             D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
             D3D11_USAGE_STAGING, ID3D11Resource, ID3D11Texture2D,
@@ -27,6 +28,7 @@ use windows::{
 pub(crate) fn capture_png(
     device: &CaptureDevice,
     item: &GraphicsCaptureItem,
+    runtime: &Runtime,
 ) -> AppResult<Vec<u8>> {
     let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
         &device.direct3d_device,
@@ -34,35 +36,51 @@ pub(crate) fn capture_png(
         1,
         item.Size()?,
     )?;
-    let (sender, receiver) = mpsc::channel::<()>();
-    let first_frame_sender = FirstFrameSender::new(sender);
+    let first_frame_signal = Arc::new(FirstFrameSignal::new());
+    let callback_signal = Arc::clone(&first_frame_signal);
     let token = frame_pool.FrameArrived(&TypedEventHandler::<
         Direct3D11CaptureFramePool,
         IInspectable,
     >::new(move |incoming_pool, _| {
         if incoming_pool.is_none() {
-            return Err(windows::core::Error::from(E_POINTER));
-        }
-        if first_frame_sender.has_sent() {
+            callback_signal.try_signal(Err(windows::core::Error::from(E_POINTER).to_string()))?;
             return Ok(());
         }
-        first_frame_sender.try_send(());
+        callback_signal.try_signal(Ok(()))?;
         Ok(())
     }))?;
     let session = frame_pool.CreateCaptureSession(item)?;
-    let result = (|| -> AppResult<Vec<u8>> {
-        session.StartCapture()?;
-        receiver
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(|error| anyhow!("等待首帧失败: {error}"))?;
-        let frame = frame_pool.TryGetNextFrame()?;
-        build_first_frame_result(encode_frame(device, &frame), frame.Close())
-            .map_err(anyhow::Error::msg)
-    })();
-    session.Close()?;
-    frame_pool.RemoveFrameArrived(token)?;
-    frame_pool.Close()?;
-    result
+    let capture_result =
+        capture_png_inner(device, &frame_pool, &session, &first_frame_signal, runtime);
+    let session_close_result = session.Close();
+    let remove_handler_result = frame_pool.RemoveFrameArrived(token);
+    let frame_pool_close_result = frame_pool.Close();
+    finalize_capture_result(
+        capture_result,
+        session_close_result,
+        remove_handler_result,
+        frame_pool_close_result,
+    )
+}
+fn capture_png_inner(
+    device: &CaptureDevice,
+    frame_pool: &Direct3D11CaptureFramePool,
+    session: &windows::Graphics::Capture::GraphicsCaptureSession,
+    first_frame_signal: &FirstFrameSignal,
+    runtime: &Runtime,
+) -> AppResult<Vec<u8>> {
+    session.StartCapture()?;
+    wait_for_first_frame(runtime, first_frame_signal)?;
+    let frame = frame_pool.TryGetNextFrame()?;
+    build_first_frame_result(encode_frame(device, &frame), frame.Close())
+        .map_err(anyhow::Error::msg)
+}
+fn wait_for_first_frame(runtime: &Runtime, first_frame_signal: &FirstFrameSignal) -> AppResult<()> {
+    runtime.block_on(async {
+        timeout(Duration::from_secs(1), first_frame_signal.wait())
+            .await
+            .map_err(|error| anyhow!("等待首帧超时: {error}"))?
+    })
 }
 fn encode_frame(device: &CaptureDevice, frame: &Direct3D11CaptureFrame) -> AppResult<Vec<u8>> {
     device.with_multithread_lock(|| encode_frame_locked(device, frame))
@@ -179,54 +197,113 @@ fn build_first_frame_result(
         (Err(error), Err(close_error)) => Err(format!("{error:#}; 关闭捕获帧失败: {close_error}")),
     }
 }
-#[derive(Clone)]
-struct FirstFrameSender<T> {
-    sender: mpsc::Sender<T>,
-    sent: Arc<AtomicBool>,
+fn finalize_capture_result(
+    capture_result: AppResult<Vec<u8>>,
+    session_close_result: windows::core::Result<()>,
+    remove_handler_result: windows::core::Result<()>,
+    frame_pool_close_result: windows::core::Result<()>,
+) -> AppResult<Vec<u8>> {
+    let mut cleanup_errors = Vec::new();
+    if let Err(error) = session_close_result {
+        cleanup_errors.push(format!("关闭捕获会话失败: {error}"));
+    }
+    if let Err(error) = remove_handler_result {
+        cleanup_errors.push(format!("移除帧到达回调失败: {error}"));
+    }
+    if let Err(error) = frame_pool_close_result {
+        cleanup_errors.push(format!("关闭捕获帧池失败: {error}"));
+    }
+    if cleanup_errors.is_empty() {
+        return capture_result;
+    }
+    let cleanup_summary = cleanup_errors.join("; ");
+    match capture_result {
+        Ok(_) => Err(anyhow!(cleanup_summary)),
+        Err(error) => Err(anyhow!("{error:#}; {cleanup_summary}")),
+    }
 }
-impl<T> FirstFrameSender<T> {
-    fn new(sender: mpsc::Sender<T>) -> Self {
+struct FirstFrameSignal {
+    notify: Notify,
+    result: Mutex<Option<Result<(), String>>>,
+    sent: AtomicBool,
+}
+impl FirstFrameSignal {
+    fn new() -> Self {
         Self {
-            sender,
-            sent: Arc::new(AtomicBool::new(false)),
+            notify: Notify::new(),
+            result: Mutex::new(None),
+            sent: AtomicBool::new(false),
         }
     }
+    #[cfg(test)]
     fn has_sent(&self) -> bool {
         self.sent.load(Ordering::Acquire)
     }
-    fn try_send(&self, value: T) {
+    fn try_signal(&self, value: Result<(), String>) -> windows::core::Result<()> {
         if self.sent.swap(true, Ordering::AcqRel) {
-            return;
+            return Ok(());
         }
-        if let Err(error) = self.sender.send(value) {
-            tracing::error!("发送首帧结果失败: {error}");
+        let mut result = self
+            .result
+            .lock()
+            .map_err(|error| windows::core::Error::new(E_FAIL, format!("{error}")))?;
+        *result = Some(value);
+        drop(result);
+        self.notify.notify_one();
+        Ok(())
+    }
+    async fn wait(&self) -> AppResult<()> {
+        loop {
+            if let Some(result) = self.take_result()? {
+                return result.map_err(anyhow::Error::msg);
+            }
+            self.notify.notified().await;
         }
+    }
+    fn take_result(&self) -> AppResult<Option<Result<(), String>>> {
+        let mut result = self
+            .result
+            .lock()
+            .map_err(|error| anyhow!("首帧通知状态互斥锁已中毒: {error}"))?;
+        Ok(result.take())
     }
 }
 #[cfg(test)]
 mod tests {
-    use super::{FirstFrameSender, build_first_frame_result};
+    use super::{FirstFrameSignal, build_first_frame_result, finalize_capture_result};
     use anyhow::anyhow;
-    use std::sync::mpsc;
+    use tokio::time::{Duration, timeout};
     use windows::Win32::Foundation::E_POINTER;
-    #[test]
-    fn first_frame_sender_only_delivers_the_first_payload() {
-        let (sender, receiver) = mpsc::channel();
-        let first_frame_sender = FirstFrameSender::new(sender);
-        first_frame_sender.try_send(Ok::<Vec<u8>, String>(vec![1, 2, 3]));
-        first_frame_sender.try_send(Ok::<Vec<u8>, String>(vec![4, 5, 6]));
-        assert_eq!(receiver.recv().unwrap().unwrap(), vec![1, 2, 3]);
-        assert!(receiver.try_recv().is_err());
-        assert!(first_frame_sender.has_sent());
+    #[tokio::test(flavor = "current_thread")]
+    async fn first_frame_signal_only_delivers_the_first_payload() {
+        let first_frame_signal = FirstFrameSignal::new();
+        first_frame_signal
+            .try_signal(Ok(()))
+            .expect("首次通知应成功");
+        first_frame_signal
+            .try_signal(Err("ignored".to_string()))
+            .expect("重复通知应被忽略");
+        timeout(Duration::from_secs(1), first_frame_signal.wait())
+            .await
+            .expect("等待首帧不应超时")
+            .expect("首次通知应返回成功");
+        assert!(first_frame_signal.has_sent());
     }
-    #[test]
-    fn first_frame_sender_tolerates_a_dropped_receiver() {
-        let (sender, receiver) = mpsc::channel::<Result<Vec<u8>, String>>();
-        drop(receiver);
-        let first_frame_sender = FirstFrameSender::new(sender);
-        first_frame_sender.try_send(Err("receiver dropped".to_string()));
-        first_frame_sender.try_send(Ok(vec![7, 8, 9]));
-        assert!(first_frame_sender.has_sent());
+    #[tokio::test(flavor = "current_thread")]
+    async fn first_frame_signal_preserves_the_first_error() {
+        let first_frame_signal = FirstFrameSignal::new();
+        first_frame_signal
+            .try_signal(Err("receiver dropped".to_string()))
+            .expect("首次通知应成功");
+        first_frame_signal
+            .try_signal(Ok(()))
+            .expect("重复通知应被忽略");
+        let error = first_frame_signal
+            .wait()
+            .await
+            .expect_err("首个错误应被保留");
+        assert!(error.to_string().contains("receiver dropped"));
+        assert!(first_frame_signal.has_sent());
     }
     #[test]
     fn build_first_frame_result_preserves_encode_errors_and_close_errors() {
@@ -237,5 +314,19 @@ mod tests {
         let error = result.unwrap_err();
         assert!(error.contains("编码失败"));
         assert!(error.contains("关闭捕获帧失败"));
+    }
+    #[test]
+    fn finalize_capture_result_merges_cleanup_errors() {
+        let result = finalize_capture_result(
+            Err(anyhow!("编码失败")),
+            Err(windows::core::Error::from(E_POINTER)),
+            Ok(()),
+            Err(windows::core::Error::from(E_POINTER)),
+        );
+        let error = result.expect_err("应返回合并后的错误");
+        let error_text = error.to_string();
+        assert!(error_text.contains("编码失败"));
+        assert!(error_text.contains("关闭捕获会话失败"));
+        assert!(error_text.contains("关闭捕获帧池失败"));
     }
 }

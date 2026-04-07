@@ -13,7 +13,7 @@ rmcp = { version = "*", default-features = false, features = ["macros", "server"
 schemars = "*"
 serde = { version = "*", features = ["derive"] }
 sonic-rs = "*"
-tokio = { version = "*", features = ["io-std", "macros", "rt-multi-thread"] }
+tokio = { version = "*", features = ["io-std", "macros", "rt-multi-thread", "sync", "time"] }
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 windows = { version = "*", features = [

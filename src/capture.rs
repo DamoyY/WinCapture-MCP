@@ -1,24 +1,36 @@
 use crate::{
-    capture_item::create_capture_item, d3d::create_capture_device, error::AppResult,
+    capture_item::create_capture_item,
+    d3d::{CaptureDevice, create_capture_device},
+    error::AppResult,
     frame::capture_png,
 };
 use anyhow::anyhow;
 use std::sync::OnceLock;
+use tokio::runtime::Runtime;
 use windows::{
     Graphics::Capture::GraphicsCaptureSession,
     Win32::{Foundation::HWND, System::Com::CoIncrementMTAUsage},
 };
 static MTA_USAGE_STATE: OnceLock<Result<(), String>> = OnceLock::new();
-pub(crate) fn capture_window_png(hwnd: HWND) -> AppResult<Vec<u8>> {
-    ensure_mta_usage()?;
-    if !GraphicsCaptureSession::IsSupported()? {
-        return Err(anyhow!("当前系统不支持 Windows.Graphics.Capture"));
-    }
-    let item = create_capture_item(hwnd)?;
-    let device = create_capture_device()?;
-    capture_png(&device, &item)
+pub(crate) struct CaptureContext {
+    device: CaptureDevice,
 }
-fn ensure_mta_usage() -> AppResult<()> {
+impl CaptureContext {
+    pub(crate) fn new() -> AppResult<Self> {
+        ensure_mta_usage()?;
+        if !GraphicsCaptureSession::IsSupported()? {
+            return Err(anyhow!("当前系统不支持 Windows.Graphics.Capture"));
+        }
+        Ok(Self {
+            device: create_capture_device()?,
+        })
+    }
+    pub(crate) fn capture_window_png(&self, runtime: &Runtime, hwnd: HWND) -> AppResult<Vec<u8>> {
+        let item = create_capture_item(hwnd)?;
+        capture_png(&self.device, &item, runtime)
+    }
+}
+pub(crate) fn ensure_mta_usage() -> AppResult<()> {
     let state = MTA_USAGE_STATE.get_or_init(|| match unsafe { CoIncrementMTAUsage() } {
         Ok(cookie) => {
             let leaked_cookie = Box::leak(Box::new(cookie));
@@ -34,9 +46,10 @@ fn ensure_mta_usage() -> AppResult<()> {
 }
 #[cfg(test)]
 mod tests {
-    use super::{capture_window_png, ensure_mta_usage};
+    use super::{CaptureContext, ensure_mta_usage};
     use crate::{hwnd::parse_hwnd, window_query::find_windows_by_process};
     use std::sync::{Mutex, OnceLock};
+    use tokio::runtime::{Builder, Runtime};
     static CAPTURE_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
     fn capture_test_mutex() -> &'static Mutex<()> {
         CAPTURE_TEST_MUTEX.get_or_init(|| Mutex::new(()))
@@ -59,8 +72,12 @@ mod tests {
         let _guard = capture_test_mutex()
             .lock()
             .expect("应能独占执行截图回归测试");
+        let runtime = build_test_runtime();
+        let capture_context = CaptureContext::new().expect("应能初始化截图上下文");
         let hwnd = find_test_hwnd();
-        let png = capture_window_png(hwnd).expect("截图应成功");
+        let png = capture_context
+            .capture_window_png(&runtime, hwnd)
+            .expect("截图应成功");
         assert!(png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
         std::thread::sleep(std::time::Duration::from_millis(500));
         let windows_after_capture =
@@ -71,7 +88,15 @@ mod tests {
                 .any(|window| window.visible && !window.minimized),
             "截图后应仍能查到可见窗口"
         );
-        let second_png = capture_window_png(hwnd).expect("同一进程内再次截图应成功");
+        let second_png = capture_context
+            .capture_window_png(&runtime, hwnd)
+            .expect("同一进程内再次截图应成功");
         assert!(second_png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+    }
+    fn build_test_runtime() -> Runtime {
+        Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("应能创建测试运行时")
     }
 }

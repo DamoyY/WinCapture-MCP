@@ -1,7 +1,7 @@
 use crate::{
-    capture::capture_window_png,
+    capture_service::capture_window_png,
     error::to_tool_error,
-    hwnd::parse_hwnd,
+    hwnd::{hwnd_to_value, parse_hwnd},
     sonic_json::SonicToolResult,
     tool_types::{CaptureWindowRequest, FindWindowsRequest, FindWindowsResponse},
     window_query::find_windows_by_process,
@@ -58,12 +58,13 @@ impl ScreenServer {
         Parameters(CaptureWindowRequest { hwnd }): Parameters<CaptureWindowRequest>,
     ) -> Result<Content, String> {
         let _: &ToolRouter<Self> = &self.tool_router;
-        let base64_png = run_blocking_tool(move || {
-            let parsed_hwnd = parse_hwnd(&hwnd)?;
-            let png = capture_window_png(parsed_hwnd)?;
-            Ok(STANDARD.encode(png))
-        })
-        .await?;
+        let hwnd_value = parse_hwnd(&hwnd)
+            .map(hwnd_to_value)
+            .map_err(|error| to_tool_error(&error))?;
+        let png = capture_window_png(hwnd_value)
+            .await
+            .map_err(|error| to_tool_error(&error))?;
+        let base64_png = STANDARD.encode(png);
         Ok(Content::image(base64_png, "image/png"))
     }
 }

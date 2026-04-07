@@ -2,6 +2,17 @@ use crate::error::AppResult;
 use anyhow::anyhow;
 use windows::Win32::Foundation::HWND;
 pub(crate) fn parse_hwnd(raw: &str) -> AppResult<HWND> {
+    parse_hwnd_value(raw).map(hwnd_from_value)
+}
+pub(crate) const fn hwnd_from_value(value: usize) -> HWND {
+    HWND(core::ptr::with_exposed_provenance_mut::<core::ffi::c_void>(
+        value,
+    ))
+}
+pub(crate) fn hwnd_to_value(hwnd: HWND) -> usize {
+    hwnd.0.addr()
+}
+fn parse_hwnd_value(raw: &str) -> AppResult<usize> {
     let value = if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
         anyhow::Context::with_context(usize::from_str_radix(hex, 16), || {
             format!("无效的 HWND: {raw}")
@@ -12,9 +23,7 @@ pub(crate) fn parse_hwnd(raw: &str) -> AppResult<HWND> {
     if value == 0 {
         return Err(anyhow!("HWND 不能为 0"));
     }
-    Ok(HWND(core::ptr::with_exposed_provenance_mut::<
-        core::ffi::c_void,
-    >(value)))
+    Ok(value)
 }
 pub(crate) fn format_hwnd(hwnd: HWND) -> String {
     format!("0x{:016X}", hwnd.0.addr())
