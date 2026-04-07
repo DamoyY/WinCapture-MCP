@@ -1,18 +1,17 @@
 use crate::{
     capture::capture_window_png,
-    error::to_mcp_error,
+    error::to_tool_error,
     hwnd::parse_hwnd,
-    tool_types::{CaptureWindowRequest, FindWindowsRequest},
+    tool_types::{CaptureWindowRequest, FindWindowsRequest, FindWindowsResponse},
     window_query::find_windows_by_process,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rmcp::{
-    ErrorData, ServerHandler,
+    Json, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
+    model::{Content, Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
 };
-use serde_json::json;
 #[derive(Clone, Debug)]
 pub(crate) struct ScreenServer {
     tool_router: ToolRouter<Self>,
@@ -28,24 +27,31 @@ impl ScreenServer {
     fn list_hwnds(
         &self,
         Parameters(FindWindowsRequest { process_name }): Parameters<FindWindowsRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<Json<FindWindowsResponse>, String> {
         let _: &ToolRouter<Self> = &self.tool_router;
-        let windows =
-            find_windows_by_process(&process_name).map_err(|error| to_mcp_error(&error))?;
-        Ok(CallToolResult::structured(
-            json ! ({ "process_name" : process_name , "windows" : windows }),
-        ))
+        match find_windows_by_process(&process_name) {
+            Ok(windows) => Ok(Json(FindWindowsResponse {
+                process_name,
+                windows,
+            })),
+            Err(error) => Err(to_tool_error(&error)),
+        }
     }
     #[tool(description = "输入 HWND，返回该窗口的 PNG 截图")]
     fn capture_hwnd(
         &self,
         Parameters(CaptureWindowRequest { hwnd }): Parameters<CaptureWindowRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<Content, String> {
         let _: &ToolRouter<Self> = &self.tool_router;
-        let parsed_hwnd = parse_hwnd(&hwnd).map_err(|error| to_mcp_error(&error))?;
-        let png = capture_window_png(parsed_hwnd).map_err(|error| to_mcp_error(&error))?;
-        let image = Content::image(STANDARD.encode(png), "image/png");
-        Ok(CallToolResult::success(vec![image]))
+        let parsed_hwnd = match parse_hwnd(&hwnd) {
+            Ok(parsed_hwnd) => parsed_hwnd,
+            Err(error) => return Err(to_tool_error(&error)),
+        };
+        let png = match capture_window_png(parsed_hwnd) {
+            Ok(png) => png,
+            Err(error) => return Err(to_tool_error(&error)),
+        };
+        Ok(Content::image(STANDARD.encode(png), "image/png"))
     }
 }
 # [tool_handler (router = self . tool_router)]
@@ -55,8 +61,11 @@ impl ScreenServer {
 )]
 impl ServerHandler for ScreenServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "提供按进程名列出窗口句柄，以及按 HWND 返回 PNG 截图的工具。".to_owned(),
-        )
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions("提供按进程名列出窗口句柄，以及按 HWND 返回 PNG 截图的工具。")
     }
 }
