@@ -1,7 +1,7 @@
 use crate::{d3d::CaptureDevice, error::AppResult};
 use anyhow::anyhow;
 use core::{slice, time::Duration};
-use image::{ExtendedColorType, codecs::png::PngEncoder};
+use png::{BitDepth, ColorType, Compression, Encoder};
 use std::{io::Cursor, sync::mpsc};
 use windows::{
     Foundation::TypedEventHandler,
@@ -89,15 +89,17 @@ fn encode_frame(device: &CaptureDevice, frame: &Direct3D11CaptureFrame) -> AppRe
     unsafe {
         device.d3d_context.Unmap(Some(&staging_resource), 0);
     }
-    let mut png = Cursor::new(Vec::new());
-    image::ImageEncoder::write_image(
-        PngEncoder::new(&mut png),
-        &rgba,
-        width,
-        height,
-        ExtendedColorType::Rgba8,
-    )?;
-    Ok(png.into_inner())
+    let mut output = Cursor::new(Vec::new());
+    let mut encoder = Encoder::new(&mut output, width, height);
+    encoder.set_color(ColorType::Rgba);
+    encoder.set_depth(BitDepth::Eight);
+    encoder.set_compression(Compression::Fastest);
+    {
+        let mut writer = encoder.write_header()?;
+        writer.write_image_data(&rgba)?;
+        writer.finish()?;
+    }
+    Ok(output.into_inner())
 }
 fn create_staging_texture(
     device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
