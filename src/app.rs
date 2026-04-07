@@ -3,7 +3,7 @@ use crate::{
     error::to_tool_error,
     hwnd::{hwnd_to_value, parse_hwnd},
     sonic_json::SonicToolResult,
-    tool_types::{CaptureWindowRequest, FindWindowsRequest, FindWindowsResponse},
+    tool_types::{SearchHwndRequest, SearchHwndResponse, WindowScreenshotRequest},
     window_query::find_windows_by_process,
 };
 use anyhow::Error as AnyhowError;
@@ -35,16 +35,16 @@ impl ScreenServer {
             tool_router: Self::tool_router(),
         }
     }
-    #[tool(description = "输入进程名，返回匹配窗口的 HWND 列表及窗口元信息")]
-    async fn list_hwnds(
+    #[tool(description = "输入进程名，返回匹配该窗口的 HWND 列表及窗口元信息")]
+    async fn search_hwnd(
         &self,
-        Parameters(FindWindowsRequest { process_name }): Parameters<FindWindowsRequest>,
-    ) -> SonicToolResult<FindWindowsResponse, String> {
+        Parameters(SearchHwndRequest { process_name }): Parameters<SearchHwndRequest>,
+    ) -> SonicToolResult<SearchHwndResponse, String> {
         let _: &ToolRouter<Self> = &self.tool_router;
         SonicToolResult(
             run_blocking_tool(move || {
                 let windows = find_windows_by_process(&process_name)?;
-                Ok(FindWindowsResponse {
+                Ok(SearchHwndResponse {
                     process_name,
                     windows,
                 })
@@ -52,10 +52,10 @@ impl ScreenServer {
             .await,
         )
     }
-    #[tool(description = "输入 HWND，返回该窗口的 PNG 截图")]
-    async fn capture_hwnd(
+    #[tool(description = "输入 HWND，返回该窗口的画面截图")]
+    async fn window_screenshot(
         &self,
-        Parameters(CaptureWindowRequest { hwnd }): Parameters<CaptureWindowRequest>,
+        Parameters(WindowScreenshotRequest { hwnd }): Parameters<WindowScreenshotRequest>,
     ) -> Result<Content, String> {
         let _: &ToolRouter<Self> = &self.tool_router;
         let hwnd_value = parse_hwnd(&hwnd)
@@ -80,6 +80,6 @@ impl ServerHandler for ScreenServer {
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions("提供按进程名列出窗口句柄，以及按 HWND 返回 PNG 截图的工具。")
+            .with_instructions("提供按进程名搜索窗口句柄，以及按 HWND 返回 PNG 截图的工具。")
     }
 }

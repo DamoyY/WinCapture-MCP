@@ -54,11 +54,11 @@ impl<T: Serialize + JsonSchema + 'static, E: IntoContents> IntoCallToolResult
 #[cfg(test)]
 mod tests {
     use super::SonicJson;
-    use crate::tool_types::{FindWindowsResponse, WindowEntry, WindowRect};
+    use crate::tool_types::{SearchHwndResponse, WindowEntry, WindowRect};
     use rmcp::handler::server::tool::IntoCallToolResult;
     #[test]
     fn sonic_json_keeps_text_and_structured_content_in_sync() {
-        let result = SonicJson(FindWindowsResponse {
+        let result = SonicJson(SearchHwndResponse {
             process_name: "explorer".to_string(),
             windows: vec![WindowEntry {
                 hwnd: "0x1234".to_string(),

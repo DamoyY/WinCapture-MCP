@@ -1,15 +1,15 @@
 use schemars::JsonSchema;
 use sonic_rs::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct FindWindowsRequest {
+pub(crate) struct SearchHwndRequest {
     pub(crate) process_name: String,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct CaptureWindowRequest {
+pub(crate) struct WindowScreenshotRequest {
     pub(crate) hwnd: String,
 }
 #[derive(Debug, Serialize, JsonSchema)]
-pub(crate) struct FindWindowsResponse {
+pub(crate) struct SearchHwndResponse {
     pub(crate) process_name: String,
     pub(crate) windows: Vec<WindowEntry>,
 }
