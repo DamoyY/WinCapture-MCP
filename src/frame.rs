@@ -1,6 +1,7 @@
 use crate::{d3d::CaptureDevice, error::AppResult};
 use anyhow::anyhow;
 use core::{slice, time::Duration};
+use garb::bytes::bgra_to_rgba_strided;
 use png::{BitDepth, ColorType, Compression, Encoder};
 use std::{io::Cursor, sync::mpsc};
 use windows::{
@@ -85,10 +86,11 @@ fn encode_frame(device: &CaptureDevice, frame: &Direct3D11CaptureFrame) -> AppRe
     let mapped_len =
         anyhow::Context::context(row_pitch.checked_mul(height_usize), "帧缓冲区长度溢出")?;
     let bytes = unsafe { slice::from_raw_parts(mapped.pData.cast::<u8>(), mapped_len) };
-    let rgba = bgra_to_rgba(bytes, row_pitch, width, height)?;
+    let rgba_result = convert_bgra_frame(bytes, row_pitch, width, height);
     unsafe {
         device.d3d_context.Unmap(Some(&staging_resource), 0);
     }
+    let rgba = rgba_result?;
     let mut output = Cursor::new(Vec::new());
     let mut encoder = Encoder::new(&mut output, width, height);
     encoder.set_color(ColorType::Rgba);
@@ -124,34 +126,30 @@ fn create_staging_texture(
     }
     anyhow::Context::context(staging, "创建 staging 纹理失败")
 }
-fn bgra_to_rgba(source: &[u8], row_pitch: usize, width: u32, height: u32) -> AppResult<Vec<u8>> {
+fn convert_bgra_frame(
+    source: &[u8],
+    row_pitch: usize,
+    width: u32,
+    height: u32,
+) -> AppResult<Vec<u8>> {
     let width_usize = anyhow::Context::context(usize::try_from(width), "窗口宽度无效")?;
     let height_usize = anyhow::Context::context(usize::try_from(height), "窗口高度无效")?;
     let pixel_row_len = anyhow::Context::context(width_usize.checked_mul(4), "像素行长度溢出")?;
-    if row_pitch < pixel_row_len {
-        return Err(anyhow!("行步长小于像素行长度"));
-    }
     let rgba_len = anyhow::Context::context(
         pixel_row_len.checked_mul(height_usize),
         "RGBA 缓冲区长度溢出",
     )?;
-    let expected_source_len =
-        anyhow::Context::context(row_pitch.checked_mul(height_usize), "源缓冲区长度溢出")?;
-    if source.len() < expected_source_len {
-        return Err(anyhow!("源缓冲区长度不足"));
-    }
-    let mut rgba = Vec::with_capacity(rgba_len);
-    for src_row in source.chunks_exact(row_pitch).take(height_usize) {
-        let pixel_bytes =
-            anyhow::Context::context(src_row.get(..pixel_row_len), "像素行长度超出缓冲区")?;
-        for bgra in pixel_bytes.chunks_exact(4) {
-            let [blue, green, red, alpha] =
-                *anyhow::Context::context(<&[u8; 4]>::try_from(bgra), "像素块长度无效")?;
-            rgba.extend_from_slice(&[red, green, blue, alpha]);
-        }
-    }
-    if rgba.len() != rgba_len {
-        return Err(anyhow!("RGBA 缓冲区长度不匹配"));
-    }
+    let mut rgba = vec![0; rgba_len];
+    anyhow::Context::context(
+        bgra_to_rgba_strided(
+            source,
+            &mut rgba,
+            width_usize,
+            height_usize,
+            row_pitch,
+            pixel_row_len,
+        ),
+        "BGRA 转 RGBA 失败",
+    )?;
     Ok(rgba)
 }
