@@ -1,6 +1,12 @@
+extern crate alloc;
 use crate::{d3d::CaptureDevice, error::AppResult};
+use alloc::sync::Arc;
 use anyhow::anyhow;
-use core::{slice, time::Duration};
+use core::{
+    slice,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 use garb::bytes::bgra_to_rgba_strided;
 use png::{BitDepth, ColorType, Compression, Encoder};
 use std::{io::Cursor, sync::mpsc};
@@ -28,34 +34,43 @@ pub(crate) fn capture_png(
         1,
         item.Size()?,
     )?;
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::channel::<()>();
+    let first_frame_sender = FirstFrameSender::new(sender);
     let token = frame_pool.FrameArrived(&TypedEventHandler::<
         Direct3D11CaptureFramePool,
         IInspectable,
     >::new(move |incoming_pool, _| {
-        let Some(arrived_frame_pool) = incoming_pool.as_ref() else {
+        if incoming_pool.is_none() {
             return Err(windows::core::Error::from(E_POINTER));
-        };
-        let frame = arrived_frame_pool.TryGetNextFrame()?;
-        sender.send(frame).map_err(|error| {
-            windows::core::Error::new(E_POINTER, format!("发送首帧失败: {error}"))
-        })?;
+        }
+        if first_frame_sender.has_sent() {
+            return Ok(());
+        }
+        first_frame_sender.try_send(());
         Ok(())
     }))?;
     let session = frame_pool.CreateCaptureSession(item)?;
     let result = (|| -> AppResult<Vec<u8>> {
         session.StartCapture()?;
-        let frame = receiver
+        receiver
             .recv_timeout(Duration::from_secs(1))
             .map_err(|error| anyhow!("等待首帧失败: {error}"))?;
-        encode_frame(device, &frame)
+        let frame = frame_pool.TryGetNextFrame()?;
+        build_first_frame_result(encode_frame(device, &frame), frame.Close())
+            .map_err(anyhow::Error::msg)
     })();
-    frame_pool.RemoveFrameArrived(token)?;
     session.Close()?;
+    frame_pool.RemoveFrameArrived(token)?;
     frame_pool.Close()?;
     result
 }
 fn encode_frame(device: &CaptureDevice, frame: &Direct3D11CaptureFrame) -> AppResult<Vec<u8>> {
+    device.with_multithread_lock(|| encode_frame_locked(device, frame))
+}
+fn encode_frame_locked(
+    device: &CaptureDevice,
+    frame: &Direct3D11CaptureFrame,
+) -> AppResult<Vec<u8>> {
     let width =
         anyhow::Context::context(u32::try_from(frame.ContentSize()?.Width), "窗口宽度无效")?;
     let height =
@@ -152,4 +167,75 @@ fn convert_bgra_frame(
         "BGRA 转 RGBA 失败",
     )?;
     Ok(rgba)
+}
+fn build_first_frame_result(
+    png_result: AppResult<Vec<u8>>,
+    close_result: windows::core::Result<()>,
+) -> Result<Vec<u8>, String> {
+    match (png_result, close_result) {
+        (Ok(png), Ok(())) => Ok(png),
+        (Err(error), Ok(())) => Err(error.to_string()),
+        (Ok(_), Err(error)) => Err(format!("关闭捕获帧失败: {error}")),
+        (Err(error), Err(close_error)) => Err(format!("{error:#}; 关闭捕获帧失败: {close_error}")),
+    }
+}
+#[derive(Clone)]
+struct FirstFrameSender<T> {
+    sender: mpsc::Sender<T>,
+    sent: Arc<AtomicBool>,
+}
+impl<T> FirstFrameSender<T> {
+    fn new(sender: mpsc::Sender<T>) -> Self {
+        Self {
+            sender,
+            sent: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    fn has_sent(&self) -> bool {
+        self.sent.load(Ordering::Acquire)
+    }
+    fn try_send(&self, value: T) {
+        if self.sent.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Err(error) = self.sender.send(value) {
+            tracing::error!("发送首帧结果失败: {error}");
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::{FirstFrameSender, build_first_frame_result};
+    use anyhow::anyhow;
+    use std::sync::mpsc;
+    use windows::Win32::Foundation::E_POINTER;
+    #[test]
+    fn first_frame_sender_only_delivers_the_first_payload() {
+        let (sender, receiver) = mpsc::channel();
+        let first_frame_sender = FirstFrameSender::new(sender);
+        first_frame_sender.try_send(Ok::<Vec<u8>, String>(vec![1, 2, 3]));
+        first_frame_sender.try_send(Ok::<Vec<u8>, String>(vec![4, 5, 6]));
+        assert_eq!(receiver.recv().unwrap().unwrap(), vec![1, 2, 3]);
+        assert!(receiver.try_recv().is_err());
+        assert!(first_frame_sender.has_sent());
+    }
+    #[test]
+    fn first_frame_sender_tolerates_a_dropped_receiver() {
+        let (sender, receiver) = mpsc::channel::<Result<Vec<u8>, String>>();
+        drop(receiver);
+        let first_frame_sender = FirstFrameSender::new(sender);
+        first_frame_sender.try_send(Err("receiver dropped".to_string()));
+        first_frame_sender.try_send(Ok(vec![7, 8, 9]));
+        assert!(first_frame_sender.has_sent());
+    }
+    #[test]
+    fn build_first_frame_result_preserves_encode_errors_and_close_errors() {
+        let result = build_first_frame_result(
+            Err(anyhow!("编码失败")),
+            Err(windows::core::Error::from(E_POINTER)),
+        );
+        let error = result.unwrap_err();
+        assert!(error.contains("编码失败"));
+        assert!(error.contains("关闭捕获帧失败"));
+    }
 }
