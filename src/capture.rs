@@ -1,8 +1,8 @@
 use crate::{
+    capture_flow::capture_png,
     capture_item::create_capture_item,
     d3d::{CaptureDevice, create_capture_device},
     error::AppResult,
-    frame::capture_png,
 };
 use anyhow::anyhow;
 use std::sync::OnceLock;

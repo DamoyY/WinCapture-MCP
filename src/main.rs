@@ -1,13 +1,17 @@
+extern crate alloc;
 mod app;
 mod capture;
+mod capture_flow;
 mod capture_item;
 mod capture_service;
+mod cleanup;
 mod d3d;
 mod error;
-mod frame;
+mod frame_signal;
 mod hwnd;
 mod process;
 mod sonic_json;
+mod texture_map;
 mod tool_types;
 mod window_details;
 mod window_query;
