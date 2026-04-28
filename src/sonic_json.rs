@@ -55,35 +55,55 @@ impl<T: Serialize + JsonSchema + 'static, E: IntoContents> IntoCallToolResult
 mod tests {
     use super::SonicJson;
     use crate::tool_types::{SearchHwndResponse, WindowEntry, WindowRect};
-    use rmcp::handler::server::tool::IntoCallToolResult;
+    use core::fmt::{Debug, Display};
+    fn must_debug<T, E: Debug>(result: Result<T, E>, message: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{message}: {error:?}"),
+        }
+    }
+    fn must_display<T, E: Display>(result: Result<T, E>, message: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{message}: {error}"),
+        }
+    }
     #[test]
     fn sonic_json_keeps_text_and_structured_content_in_sync() {
-        let result = SonicJson(SearchHwndResponse {
-            process_name: "explorer".to_string(),
-            windows: vec![WindowEntry {
-                hwnd: "0x1234".to_string(),
-                pid: 42,
-                title: "Explorer".to_string(),
-                class_name: "CabinetWClass".to_string(),
-                visible: true,
-                minimized: false,
-                rect: WindowRect {
-                    left: 1,
-                    top: 2,
-                    right: 3,
-                    bottom: 4,
+        let result = must_debug(
+            rmcp::handler::server::tool::IntoCallToolResult::into_call_tool_result(SonicJson(
+                SearchHwndResponse {
+                    process_name: String::from("explorer"),
+                    windows: vec![WindowEntry {
+                        hwnd: String::from("0x1234"),
+                        pid: 42,
+                        title: String::from("Explorer"),
+                        class_name: String::from("CabinetWClass"),
+                        visible: true,
+                        minimized: false,
+                        rect: WindowRect {
+                            left: 1,
+                            top: 2,
+                            right: 3,
+                            bottom: 4,
+                        },
+                    }],
                 },
-            }],
-        })
-        .into_call_tool_result()
-        .unwrap();
-        let text = result
+            )),
+            "SonicJson 应能转为工具结果",
+        );
+        let Some(text) = result
             .content
             .first()
             .and_then(|content| content.as_text())
             .map(|content| content.text.as_str())
-            .unwrap();
-        let parsed = sonic_rs::from_str::<rmcp::serde_json::Value>(text).unwrap();
+        else {
+            panic!("应包含文本内容");
+        };
+        let parsed = must_display(
+            sonic_rs::from_str::<rmcp::serde_json::Value>(text),
+            "文本内容应能解析为 JSON",
+        );
         assert_eq!(result.structured_content, Some(parsed));
         assert_eq!(result.is_error, Some(false));
     }

@@ -1,61 +1,106 @@
 use crate::error::AppResult;
-use std::{ffi::OsString, path::Path};
-use windows::{
-    Win32::{
-        Foundation::CloseHandle,
-        System::Threading::{
-            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-            QueryFullProcessImageNameW,
-        },
+use anyhow::Context as _;
+use windows::Win32::{
+    Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE},
+    System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
     },
-    core::PWSTR,
 };
-pub(crate) fn query_process_name(pid: u32) -> AppResult<String> {
-    let handle = anyhow::Context::with_context(
-        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) },
-        || format!("打开进程失败: {pid}"),
+use windows::core::HRESULT;
+pub(crate) fn find_process_ids_by_name(process_name: &str) -> AppResult<Vec<u32>> {
+    let snapshot = anyhow::Context::context(
+        unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) },
+        "创建进程快照失败",
     )?;
-    let mut buffer = [0_u16; 1024];
-    let mut size = anyhow::Context::context(u32::try_from(buffer.len()), "进程路径缓冲区长度无效")?;
-    let result = unsafe {
-        QueryFullProcessImageNameW(
-            handle,
-            PROCESS_NAME_WIN32,
-            PWSTR(buffer.as_mut_ptr()),
-            core::ptr::from_mut(&mut size),
-        )
-    };
-    let close_result = unsafe { CloseHandle(handle) };
-    anyhow::Context::with_context(close_result, || format!("关闭进程句柄失败: {pid}"))?;
-    anyhow::Context::with_context(result, || format!("读取进程名失败: {pid}"))?;
-    let size_usize = anyhow::Context::context(usize::try_from(size), "进程路径长度无效")?;
-    let path_slice = anyhow::Context::context(buffer.get(..size_usize), "进程路径长度超出缓冲区")?;
-    let path = <OsString as std::os::windows::ffi::OsStringExt>::from_wide(path_slice);
-    let name = Path::new(&path)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("提取进程名失败: {pid}"))?;
-    Ok(name)
+    let result = collect_matching_process_ids(snapshot, process_name);
+    anyhow::Context::context(unsafe { CloseHandle(snapshot) }, "关闭进程快照句柄失败")?;
+    result
 }
-pub(crate) fn normalize_process_name(name: &str) -> String {
+fn collect_matching_process_ids(snapshot: HANDLE, process_name: &str) -> AppResult<Vec<u32>> {
+    let matcher = ProcessNameMatcher::new(process_name);
+    let mut entry = PROCESSENTRY32W {
+        dwSize: anyhow::Context::context(
+            u32::try_from(core::mem::size_of::<PROCESSENTRY32W>()),
+            "进程快照项结构体大小无效",
+        )?,
+        ..PROCESSENTRY32W::default()
+    };
+    let mut process_ids = Vec::new();
+    match unsafe { Process32FirstW(snapshot, core::ptr::from_mut(&mut entry)) } {
+        Ok(()) => {}
+        Err(error) if is_no_more_files(&error) => return Ok(process_ids),
+        Err(error) => return Err(error).context("读取首个进程快照项失败"),
+    }
+    loop {
+        match process_entry_name(&entry) {
+            Ok(name) if matcher.matches(&name) => process_ids.push(entry.th32ProcessID),
+            Ok(_) => {}
+            Err(error) => tracing::error!(
+                "读取进程快照项名称失败，pid={}: {error:#}",
+                entry.th32ProcessID
+            ),
+        }
+        match unsafe { Process32NextW(snapshot, core::ptr::from_mut(&mut entry)) } {
+            Ok(()) => {}
+            Err(error) if is_no_more_files(&error) => break,
+            Err(error) => return Err(error).context("读取下一个进程快照项失败"),
+        }
+    }
+    Ok(process_ids)
+}
+fn process_entry_name(entry: &PROCESSENTRY32W) -> AppResult<String> {
+    let name_len = entry
+        .szExeFile
+        .iter()
+        .position(|code_unit| *code_unit == 0)
+        .ok_or_else(|| anyhow::anyhow!("进程名缺少字符串终止符: {}", entry.th32ProcessID))?;
+    let name_slice =
+        anyhow::Context::context(entry.szExeFile.get(..name_len), "进程名长度超出缓冲区")?;
+    if name_slice.is_empty() {
+        anyhow::bail!("进程名为空: {}", entry.th32ProcessID);
+    }
+    anyhow::Context::with_context(String::from_utf16(name_slice), || {
+        format!("进程名不是有效 UTF-16: {}", entry.th32ProcessID)
+    })
+}
+fn is_no_more_files(error: &windows::core::Error) -> bool {
+    error.code() == HRESULT::from_win32(ERROR_NO_MORE_FILES.0)
+}
+fn normalize_process_name(name: &str) -> String {
     name.trim().to_ascii_lowercase()
 }
-pub(crate) fn matches_process_name(actual: &str, target: &str) -> bool {
-    let normalized_actual = normalize_process_name(actual);
-    let normalized_target = normalize_process_name(target);
-    normalized_actual == normalized_target
-        || normalized_actual.trim_end_matches(".exe") == normalized_target.trim_end_matches(".exe")
+fn process_name_without_exe(name: &str) -> &str {
+    name.trim_end_matches(".exe")
+}
+struct ProcessNameMatcher {
+    normalized_target: String,
+    target_without_extension: String,
+}
+impl ProcessNameMatcher {
+    fn new(target: &str) -> Self {
+        let normalized_target = normalize_process_name(target);
+        let target_without_extension = process_name_without_exe(&normalized_target).to_owned();
+        Self {
+            normalized_target,
+            target_without_extension,
+        }
+    }
+    fn matches(&self, actual: &str) -> bool {
+        let normalized_actual = normalize_process_name(actual);
+        normalized_actual == self.normalized_target
+            || process_name_without_exe(&normalized_actual) == self.target_without_extension
+    }
 }
 #[cfg(test)]
 mod tests {
-    use super::matches_process_name;
+    use super::ProcessNameMatcher;
     #[test]
     fn accepts_exact_name() {
-        assert!(matches_process_name("notepad.exe", "notepad.exe"));
+        assert!(ProcessNameMatcher::new("notepad.exe").matches("notepad.exe"));
     }
     #[test]
     fn accepts_name_without_extension() {
-        assert!(matches_process_name("notepad.exe", "notepad"));
+        assert!(ProcessNameMatcher::new("notepad").matches("notepad.exe"));
     }
 }

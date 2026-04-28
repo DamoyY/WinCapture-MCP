@@ -66,36 +66,41 @@ pub(crate) fn wait_for_first_frame(
 #[cfg(test)]
 mod tests {
     use super::FirstFrameSignal;
+    use core::fmt::Display;
     use tokio::time::{Duration, timeout};
+    fn must<T, E: Display>(result: Result<T, E>, message: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{message}: {error}"),
+        }
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn first_frame_signal_only_delivers_the_first_payload() {
         let first_frame_signal = FirstFrameSignal::new();
-        first_frame_signal
-            .try_signal(Ok(()))
-            .expect("首次通知应成功");
-        first_frame_signal
-            .try_signal(Err("ignored".to_string()))
-            .expect("重复通知应被忽略");
-        timeout(Duration::from_secs(1), first_frame_signal.wait())
-            .await
-            .expect("等待首帧不应超时")
-            .expect("首次通知应返回成功");
+        must(first_frame_signal.try_signal(Ok(())), "首次通知应成功");
+        must(
+            first_frame_signal.try_signal(Err(String::from("ignored"))),
+            "重复通知应被忽略",
+        );
+        let wait_result = must(
+            timeout(Duration::from_secs(1), first_frame_signal.wait()).await,
+            "等待首帧不应超时",
+        );
+        must(wait_result, "首次通知应返回成功");
         assert!(first_frame_signal.has_sent());
     }
     #[tokio::test(flavor = "current_thread")]
     async fn first_frame_signal_preserves_the_first_error() {
         let first_frame_signal = FirstFrameSignal::new();
-        first_frame_signal
-            .try_signal(Err("receiver dropped".to_string()))
-            .expect("首次通知应成功");
-        first_frame_signal
-            .try_signal(Ok(()))
-            .expect("重复通知应被忽略");
-        let error = first_frame_signal
-            .wait()
-            .await
-            .expect_err("首个错误应被保留");
-        assert!(error.to_string().contains("receiver dropped"));
+        must(
+            first_frame_signal.try_signal(Err(String::from("receiver dropped"))),
+            "首次通知应成功",
+        );
+        must(first_frame_signal.try_signal(Ok(())), "重复通知应被忽略");
+        let Err(error) = first_frame_signal.wait().await else {
+            panic!("首个错误应被保留");
+        };
+        assert!(format!("{error}").contains("receiver dropped"));
         assert!(first_frame_signal.has_sent());
     }
 }

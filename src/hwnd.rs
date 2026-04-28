@@ -31,14 +31,21 @@ pub(crate) fn format_hwnd(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::{format_hwnd, parse_hwnd};
+    use core::fmt::Display;
+    fn must<T, E: Display>(result: Result<T, E>, message: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{message}: {error}"),
+        }
+    }
     #[test]
     fn parses_hex_hwnd() {
-        let hwnd = parse_hwnd("0x2A").expect("hex should parse");
+        let hwnd = must(parse_hwnd("0x2A"), "hex should parse");
         assert_eq!(format_hwnd(hwnd), "0x000000000000002A");
     }
     #[test]
     fn parses_decimal_hwnd() {
-        let hwnd = parse_hwnd("42").expect("decimal should parse");
+        let hwnd = must(parse_hwnd("42"), "decimal should parse");
         assert_eq!(format_hwnd(hwnd), "0x000000000000002A");
     }
 }

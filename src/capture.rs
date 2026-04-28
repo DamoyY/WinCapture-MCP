@@ -48,55 +48,67 @@ pub(crate) fn ensure_mta_usage() -> AppResult<()> {
 mod tests {
     use super::{CaptureContext, ensure_mta_usage};
     use crate::{hwnd::parse_hwnd, window_query::find_windows_by_process};
+    use core::{fmt::Display, time::Duration};
     use std::sync::{Mutex, OnceLock};
     use tokio::runtime::{Builder, Runtime};
     static CAPTURE_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
     fn capture_test_mutex() -> &'static Mutex<()> {
         CAPTURE_TEST_MUTEX.get_or_init(|| Mutex::new(()))
     }
+    fn must<T, E: Display>(result: Result<T, E>, message: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{message}: {error}"),
+        }
+    }
     fn find_test_hwnd() -> windows::Win32::Foundation::HWND {
-        let windows = find_windows_by_process("explorer").expect("应能枚举 explorer 窗口");
+        let windows = must(
+            find_windows_by_process("explorer"),
+            "应能枚举 explorer 窗口",
+        );
         let window = windows
             .into_iter()
             .find(|window| window.visible && !window.minimized)
-            .expect("应至少存在一个可见且未最小化的 explorer 窗口");
-        parse_hwnd(&window.hwnd).expect("窗口句柄应能成功解析")
+            .unwrap_or_else(|| panic!("应至少存在一个可见且未最小化的 explorer 窗口"));
+        must(parse_hwnd(&window.hwnd), "窗口句柄应能成功解析")
     }
     #[test]
     fn ensure_mta_usage_is_idempotent() {
-        ensure_mta_usage().expect("第一次初始化 MTA 应成功");
-        ensure_mta_usage().expect("重复初始化 MTA 应成功");
+        must(ensure_mta_usage(), "第一次初始化 MTA 应成功");
+        must(ensure_mta_usage(), "重复初始化 MTA 应成功");
     }
     #[test]
     fn capture_window_png_keeps_process_usable_after_capture() {
-        let _guard = capture_test_mutex()
-            .lock()
-            .expect("应能独占执行截图回归测试");
+        let _guard = must(capture_test_mutex().lock(), "应能独占执行截图回归测试");
         let runtime = build_test_runtime();
-        let capture_context = CaptureContext::new().expect("应能初始化截图上下文");
+        let capture_context = must(CaptureContext::new(), "应能初始化截图上下文");
         let hwnd = find_test_hwnd();
-        let png = capture_context
-            .capture_window_png(&runtime, hwnd)
-            .expect("截图应成功");
+        let png = must(
+            capture_context.capture_window_png(&runtime, hwnd),
+            "截图应成功",
+        );
         assert!(png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let windows_after_capture =
-            find_windows_by_process("explorer").expect("截图后应仍能继续查询窗口");
+        std::thread::sleep(Duration::from_millis(500));
+        let windows_after_capture = must(
+            find_windows_by_process("explorer"),
+            "截图后应仍能继续查询窗口",
+        );
         assert!(
             windows_after_capture
                 .iter()
                 .any(|window| window.visible && !window.minimized),
             "截图后应仍能查到可见窗口"
         );
-        let second_png = capture_context
-            .capture_window_png(&runtime, hwnd)
-            .expect("同一进程内再次截图应成功");
+        let second_png = must(
+            capture_context.capture_window_png(&runtime, hwnd),
+            "同一进程内再次截图应成功",
+        );
         assert!(second_png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
     }
     fn build_test_runtime() -> Runtime {
-        Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .expect("应能创建测试运行时")
+        must(
+            Builder::new_current_thread().enable_time().build(),
+            "应能创建测试运行时",
+        )
     }
 }

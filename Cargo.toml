@@ -27,6 +27,7 @@ windows = { version = "*", features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_System_Com",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
     "Win32_System_WinRT",
     "Win32_System_WinRT_Direct3D11",
@@ -36,7 +37,6 @@ windows = { version = "*", features = [
 
 [profile.dev]
 debug = true
-opt-level = 1
 
 [profile.release]
 opt-level = 3

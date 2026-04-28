@@ -47,7 +47,9 @@ mod tests {
             Err(anyhow!("编码失败")),
             Err(windows::core::Error::from(E_POINTER)),
         );
-        let error = result.unwrap_err();
+        let Err(error) = result else {
+            panic!("应返回合并后的错误");
+        };
         assert!(error.contains("编码失败"));
         assert!(error.contains("关闭捕获帧失败"));
     }
@@ -59,8 +61,10 @@ mod tests {
             Ok(()),
             Err(windows::core::Error::from(E_POINTER)),
         );
-        let error = result.expect_err("应返回合并后的错误");
-        let error_text = error.to_string();
+        let Err(error) = result else {
+            panic!("应返回合并后的错误");
+        };
+        let error_text = format!("{error}");
         assert!(error_text.contains("编码失败"));
         assert!(error_text.contains("关闭捕获会话失败"));
         assert!(error_text.contains("关闭捕获帧池失败"));

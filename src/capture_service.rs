@@ -111,9 +111,10 @@ impl CaptureWorker {
 #[cfg(test)]
 mod tests {
     use super::warmup_capture_service;
+    use crate::error::AppResult;
     #[test]
-    fn warmup_capture_service_is_idempotent() {
-        warmup_capture_service().expect("首次预热应成功");
-        warmup_capture_service().expect("重复预热应成功");
+    fn warmup_capture_service_is_idempotent() -> AppResult<()> {
+        warmup_capture_service()?;
+        warmup_capture_service()
     }
 }
