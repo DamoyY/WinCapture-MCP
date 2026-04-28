@@ -5,15 +5,25 @@ edition = "2024"
 
 [dependencies]
 anyhow = "*"
-base64-turbo = "*"
-garb = "*"
+base64-turbo = { version = "*", features = ["unstable"] }
+garb = { version = "*", features = ["experimental"] }
 mimalloc = { version = "*", features = ["v3"] }
 png = { version = "*", features = ["unstable"] }
-rmcp = { version = "*", default-features = false, features = ["macros", "server", "transport-io"] }
+rmcp = { version = "*", default-features = false, features = [
+    "macros",
+    "server",
+    "transport-io",
+] }
 schemars = "*"
-serde = { version = "*", features = ["derive"] }
+serde = { version = "*", features = ["derive", "unstable"] }
 sonic-rs = "*"
-tokio = { version = "*", features = ["io-std", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "*", features = [
+    "io-std",
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 windows = { version = "*", features = [
@@ -39,10 +49,11 @@ windows = { version = "*", features = [
 debug = true
 
 [profile.release]
-opt-level = 3
-lto = "fat"
 codegen-units = 1
+lto = "fat"
+opt-level = 3
 panic = "abort"
+strip = true
 
 [lints.rust]
 future-incompatible = "warn"
