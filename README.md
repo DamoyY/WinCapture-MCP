@@ -1,58 +1,80 @@
 Language Option / 语言选项：
 
-[简体中文](README-SC.md) | English
+**English** | [简体中文](README-SC.md)
 
 ---
 
 # WinCapture-MCP
 
-WinCapture-MCP is a Model Context Protocol (MCP) server written in Rust for Windows. It allows MCP clients to search for windows by process name and capture screenshots of specific windows by HWND.
+WinCapture-MCP is an MCP server tool developed in Rust and designed for Windows. It allows MCP clients to capture and view screenshots of specified windows.
 
-This tool can capture windows that are obscured, but it cannot capture minimized windows.
+This tool can capture windows even when they are covered by other windows, but it cannot capture minimized windows.
 
-## System Requirements
+---
 
-*   **Operating system**: Windows 10 or Windows 11 (the system must support the `Windows.Graphics.Capture` API).
-*   **Development environment**: Rust toolchain (Edition 2024, latest stable Rust recommended).
+## Usage
 
-## Build
+### Standard Installation
 
-1. Clone or download this repository.
-2. Open a terminal in the project root directory where `Cargo.toml` is located.
+1. Download the archive from the [Releases page](https://github.com/DamoyY/WinCapture-MCP/releases/latest).
+2. Extract the executable to any location and remember its path.
+3. Add this MCP server to your client.
+
+#### Manual Build
+
+1. Clone or download the source code of this project.
+2. Open a terminal in the project root directory, where `Cargo.toml` is located.
 3. Run the following command to build the project:
 
-```bash
+```cmd
 cargo build --release
 ```
 
-After the build completes, the executable will be generated at `target/release/WinCapture.exe`. Record its absolute path so it can be configured in your MCP client.
+After the build is complete, the executable will be generated at `./target/release/WinCapture.exe`.
 
-## MCP Client Configuration
+### MCP Client Configuration
 
-To use this tool from an MCP client such as Claude Code, add the server to the client's configuration.
+To use this tool with an MCP client, add the server to the client’s configuration file.
 
-For example, in Claude Code run:
+#### Examples:
 
-```bash
+**Claude Code**:
+
+```cmd
 claude mcp add WinCapture -- X:/example/path/WinCapture.exe
 ```
 
-After the configuration is added, restart the MCP client for the change to take effect.
+**Codex CLI**：
+
+```
+codex mcp add WinCapture -- X:/example/path/WinCapture.exe
+```
+
+After completing the configuration, restart the MCP client for the changes to take effect.
+
+---
 
 ## Available MCP Tools
 
-This server exposes the following two tools to MCP clients:
+This server provides the following two tools to MCP clients:
 
-### 1. search_hwnd
+### `search_hwnd`
 
-*   **Description**: Accepts a process name and returns a list of matching window HWNDs together with window metadata.
+*   **Description**: Takes a process name as input and returns a list of matching window HWNDs along with window metadata.
 *   **Parameters**:
-    *   `process_name` (string): The target process name. Matching is case-insensitive, and both names with or without the `.exe` suffix are accepted, such as `"explorer"` or `"chrome.exe"`.
-*   **Returns**: Structured JSON data containing all matched window information.
+    *   `process_name` (string): The name of the target process. Matching is case-insensitive, and the `.exe` suffix is optional.
+*   **Return Value**: Structured JSON data containing information about all found windows.
 
-### 2. window_screenshot
+### `window_screenshot`
 
-*   **Description**: Accepts an HWND and returns a screenshot of the corresponding window.
+*   **Description**: Takes an HWND as input and returns a screenshot of the corresponding window.
 *   **Parameters**:
-    *   `hwnd` (string): The target window handle. Both hexadecimal formats such as `"0x00000000000A1B2C"` or `"0x2A"` and decimal format are supported.
-*   **Returns**: A PNG image returned to the client as MCP content with the `image/png` MIME type, which AI clients can display directly.
+    *   `hwnd` (string): The handle of the target window. Both hexadecimal and decimal formats are supported.
+*   **Return Value**: An image returned as MCP Content with the `image/png` MIME type.
+
+---
+
+## System Requirements
+
+*   **Operating System**: Windows 10 or Windows 11. The system must support the `Windows.Graphics.Capture` API.
+*   **Development Environment**: Rust toolchain, 2024 Edition.
