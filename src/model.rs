@@ -1,5 +1,5 @@
 use schemars::JsonSchema;
-use sonic_rs::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SearchHwndRequest {
     pub(crate) process_name: String,

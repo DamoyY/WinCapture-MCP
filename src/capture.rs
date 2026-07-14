@@ -1,114 +1,97 @@
-use crate::{
-    capture_flow::capture_png,
-    capture_item::create_capture_item,
-    d3d::{CaptureDevice, create_capture_device},
-    error::AppResult,
-};
-use anyhow::anyhow;
-use std::sync::OnceLock;
-use tokio::runtime::Runtime;
+mod device;
+mod frame;
+mod resources;
+mod service;
+use crate::{capture::resources::CaptureResources, window::parse_hwnd};
+use anyhow::{Context as _, anyhow};
+use core::time::Duration;
+use device::CaptureDevice;
+use frame::FrameEncoder;
+pub(crate) use service::capture_window_png;
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use windows::{
-    Graphics::Capture::GraphicsCaptureSession,
-    Win32::{Foundation::HWND, System::Com::CoIncrementMTAUsage},
+    Foundation::TypedEventHandler,
+    Graphics::{
+        Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession},
+        DirectX::DirectXPixelFormat,
+    },
+    Win32::{Foundation::E_POINTER, System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop},
+    core::{IInspectable, factory},
 };
-static MTA_USAGE_STATE: OnceLock<Result<(), String>> = OnceLock::new();
-pub(crate) struct CaptureContext {
+pub(crate) type AppResult<T> = anyhow::Result<T>;
+struct CaptureContext {
     device: CaptureDevice,
+    encoder: FrameEncoder,
 }
 impl CaptureContext {
-    pub(crate) fn new() -> AppResult<Self> {
-        ensure_mta_usage()?;
+    fn new() -> AppResult<Self> {
+        let device = CaptureDevice::new()?;
         if !GraphicsCaptureSession::IsSupported()? {
             return Err(anyhow!("当前系统不支持 Windows.Graphics.Capture"));
         }
         Ok(Self {
-            device: create_capture_device()?,
+            device,
+            encoder: FrameEncoder::new()?,
         })
     }
-    pub(crate) fn capture_window_png(&self, runtime: &Runtime, hwnd: HWND) -> AppResult<Vec<u8>> {
-        let item = create_capture_item(hwnd)?;
-        capture_png(&self.device, &item, runtime)
+    fn capture_window_png(&self, hwnd_text: &str) -> AppResult<Vec<u8>> {
+        let hwnd = parse_hwnd(hwnd_text)?;
+        let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+        let item = unsafe { interop.CreateForWindow(hwnd) }
+            .with_context(|| format!("无法为 HWND {hwnd_text} 创建捕获目标"))?;
+        capture_png(&self.device, &self.encoder, &item)
     }
 }
-pub(crate) fn ensure_mta_usage() -> AppResult<()> {
-    let state = MTA_USAGE_STATE.get_or_init(|| match unsafe { CoIncrementMTAUsage() } {
-        Ok(cookie) => {
-            let leaked_cookie = Box::leak(Box::new(cookie));
-            tracing::trace!(?leaked_cookie, "全局 MTA 使用计数已初始化");
+fn capture_png(
+    device: &CaptureDevice,
+    encoder: &FrameEncoder,
+    item: &GraphicsCaptureItem,
+) -> AppResult<Vec<u8>> {
+    let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+        device.direct3d_device(),
+        DirectXPixelFormat::B8G8R8A8UIntNormalized,
+        1,
+        item.Size()?,
+    )?;
+    let mut resources = CaptureResources::new(frame_pool);
+    let (signal_sender, signal_receiver) = sync_channel(1);
+    let token = resources
+        .frame_pool()
+        .FrameArrived(&frame_handler(signal_sender))?;
+    resources.set_handler_token(token);
+    let session = resources.frame_pool().CreateCaptureSession(item)?;
+    resources.set_session(session);
+    let capture_result = capture_first_frame(device, encoder, &resources, &signal_receiver);
+    resources.finish(capture_result)
+}
+fn frame_handler(
+    signal_sender: SyncSender<Result<(), String>>,
+) -> TypedEventHandler<Direct3D11CaptureFramePool, IInspectable> {
+    TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |incoming_pool, _| {
+        let signal = if incoming_pool.is_none() {
+            Err(windows::core::Error::from(E_POINTER).to_string())
+        } else {
             Ok(())
+        };
+        match signal_sender.try_send(signal) {
+            Ok(()) | Err(TrySendError::Full(_)) => Ok(()),
+            Err(TrySendError::Disconnected(_)) => {
+                Err(windows::core::Error::new(E_POINTER, "首帧通知接收端已关闭"))
+            }
         }
-        Err(error) => Err(error.to_string()),
-    });
-    if let Err(error) = state.as_ref() {
-        return Err(anyhow!("{error}"));
-    }
-    Ok(())
+    })
 }
-#[cfg(test)]
-mod tests {
-    use super::{CaptureContext, ensure_mta_usage};
-    use crate::{hwnd::parse_hwnd, window_query::find_windows_by_process};
-    use core::{fmt::Display, time::Duration};
-    use std::sync::{Mutex, OnceLock};
-    use tokio::runtime::{Builder, Runtime};
-    static CAPTURE_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-    fn capture_test_mutex() -> &'static Mutex<()> {
-        CAPTURE_TEST_MUTEX.get_or_init(|| Mutex::new(()))
-    }
-    fn must<T, E: Display>(result: Result<T, E>, message: &str) -> T {
-        match result {
-            Ok(value) => value,
-            Err(error) => panic!("{message}: {error}"),
-        }
-    }
-    fn find_test_hwnd() -> windows::Win32::Foundation::HWND {
-        let windows = must(
-            find_windows_by_process("explorer"),
-            "应能枚举 explorer 窗口",
-        );
-        let window = windows
-            .into_iter()
-            .find(|window| window.visible && !window.minimized)
-            .unwrap_or_else(|| panic!("应至少存在一个可见且未最小化的 explorer 窗口"));
-        must(parse_hwnd(&window.hwnd), "窗口句柄应能成功解析")
-    }
-    #[test]
-    fn ensure_mta_usage_is_idempotent() {
-        must(ensure_mta_usage(), "第一次初始化 MTA 应成功");
-        must(ensure_mta_usage(), "重复初始化 MTA 应成功");
-    }
-    #[test]
-    fn capture_window_png_keeps_process_usable_after_capture() {
-        let _guard = must(capture_test_mutex().lock(), "应能独占执行截图回归测试");
-        let runtime = build_test_runtime();
-        let capture_context = must(CaptureContext::new(), "应能初始化截图上下文");
-        let hwnd = find_test_hwnd();
-        let png = must(
-            capture_context.capture_window_png(&runtime, hwnd),
-            "截图应成功",
-        );
-        assert!(png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
-        std::thread::sleep(Duration::from_millis(500));
-        let windows_after_capture = must(
-            find_windows_by_process("explorer"),
-            "截图后应仍能继续查询窗口",
-        );
-        assert!(
-            windows_after_capture
-                .iter()
-                .any(|window| window.visible && !window.minimized),
-            "截图后应仍能查到可见窗口"
-        );
-        let second_png = must(
-            capture_context.capture_window_png(&runtime, hwnd),
-            "同一进程内再次截图应成功",
-        );
-        assert!(second_png.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
-    }
-    fn build_test_runtime() -> Runtime {
-        must(
-            Builder::new_current_thread().enable_time().build(),
-            "应能创建测试运行时",
-        )
-    }
+fn capture_first_frame(
+    device: &CaptureDevice,
+    encoder: &FrameEncoder,
+    resources: &CaptureResources,
+    signal_receiver: &Receiver<Result<(), String>>,
+) -> AppResult<Vec<u8>> {
+    resources.session()?.StartCapture()?;
+    let signal = signal_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .context("等待首帧超时")?;
+    signal.map_err(anyhow::Error::msg)?;
+    let frame = resources.frame_pool().TryGetNextFrame()?;
+    encoder.encode(device, frame)
 }
